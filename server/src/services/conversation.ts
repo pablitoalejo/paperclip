@@ -139,8 +139,20 @@ export function conversationService(db: Db) {
       rawConfig,
     );
 
-    // Inject the message as the prompt template
-    runtimeConfig.promptTemplate = request.message;
+    // Inject the message as the prompt template with conversation mode directive
+    const conversationDirective = [
+      "You are in a LIVE CONVERSATION via messaging. This is NOT a heartbeat or task.",
+      "RULES: Do NOT use tools. Do NOT run heartbeat procedures. Do NOT check APIs.",
+      "Just talk. Keep responses under 3 sentences unless asked to elaborate.",
+      "",
+      request.message,
+    ].join("\n");
+    runtimeConfig.promptTemplate = conversationDirective;
+
+    // Limit turns and disable dangerous permissions for conversations
+    runtimeConfig.maxTurnsPerRun = runtimeConfig.maxTurnsPerRun
+      ? Math.min(Number(runtimeConfig.maxTurnsPerRun), 3)
+      : 3;
 
     const existingSession = await getConvSession(
       agent.companyId,
