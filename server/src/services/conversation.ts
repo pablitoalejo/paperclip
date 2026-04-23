@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable, agentTaskSessions } from "@paperclipai/db";
@@ -15,6 +17,8 @@ export interface ConversationRequest {
   message: string;
   sessionKey?: string;
   source?: string;
+  allowedTools?: string[];
+  maxTurns?: number;
 }
 
 export interface ConversationResult {
@@ -139,20 +143,70 @@ export function conversationService(db: Db) {
       rawConfig,
     );
 
-    // Inject the message as the prompt template with conversation mode directive
+    // Build conversation directive based on tool access level
+    const hasTools = request.allowedTools && request.allowedTools.length > 0;
+    const toolDirective = hasTools
+      ? `You MAY use these tools when needed: ${request.allowedTools!.join(", ")}. Use tools when the user asks you to DO something, recall something, or when you need context. For casual chat, just talk — no tools needed.`
+      : "Do NOT use tools.";
+
+    // Inject current date/time and HEARTBEAT.md into the conversation prompt so the
+    // agent has accurate context without needing to make file-read tool calls.
+    const nowET = new Date().toLocaleString("en-US", {
+      timeZone: "America/New_York",
+      weekday: "long",
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      timeZoneName: "short",
+    });
+
+    let heartbeatSection = "";
+    const instructionsFilePath = typeof rawConfig.instructionsFilePath === "string" ? rawConfig.instructionsFilePath : "";
+    if (instructionsFilePath) {
+      const heartbeatPath = path.join(path.dirname(instructionsFilePath), "HEARTBEAT.md");
+      try {
+        const heartbeatContent = await fs.readFile(heartbeatPath, "utf-8");
+        heartbeatSection = [
+          "",
+          "---",
+          "## Active Protocols (HEARTBEAT.md — loaded at session start, do not re-read)",
+          "",
+          heartbeatContent.trim(),
+          "---",
+          "",
+        ].join("\n");
+      } catch {
+        // Agent has no HEARTBEAT.md — skip injection
+      }
+    }
+
     const conversationDirective = [
       "You are in a LIVE CONVERSATION via messaging. This is NOT a heartbeat or task.",
-      "RULES: Do NOT use tools. Do NOT run heartbeat procedures. Do NOT check APIs.",
-      "Just talk. Keep responses under 3 sentences unless asked to elaborate.",
       "",
+      `Current date and time: ${nowET}`,
+      "",
+      "RULES:",
+      `- ${toolDirective}`,
+      "- Do NOT run heartbeat procedures. Do NOT check task queues.",
+      "- Keep responses under 3 sentences unless asked to elaborate.",
+      "- If a task will take multiple steps, acknowledge first, then work.",
+      heartbeatSection,
       request.message,
     ].join("\n");
     runtimeConfig.promptTemplate = conversationDirective;
 
-    // Limit turns and disable dangerous permissions for conversations
+    // Use caller-specified maxTurns, fall back to config, cap at 20
+    const requestedTurns = request.maxTurns ?? (hasTools ? 15 : 3);
     runtimeConfig.maxTurnsPerRun = runtimeConfig.maxTurnsPerRun
-      ? Math.min(Number(runtimeConfig.maxTurnsPerRun), 3)
-      : 3;
+      ? Math.min(Number(runtimeConfig.maxTurnsPerRun), requestedTurns)
+      : requestedTurns;
+
+    // Pass allowed tools to the adapter so it can restrict Claude CLI
+    if (request.allowedTools) {
+      runtimeConfig.allowedTools = request.allowedTools;
+    }
 
     const existingSession = await getConvSession(
       agent.companyId,

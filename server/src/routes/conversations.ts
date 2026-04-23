@@ -29,10 +29,12 @@ export function conversationRoutes(db: Db) {
       const agent = await resolveAgent(agentId);
       if (!agent) throw notFound("Agent not found");
 
-      const { message, sessionKey, source } = req.body as {
+      const { message, sessionKey, source, allowedTools, maxTurns } = req.body as {
         message?: unknown;
         sessionKey?: unknown;
         source?: unknown;
+        allowedTools?: unknown;
+        maxTurns?: unknown;
       };
 
       if (typeof message !== "string" || !message.trim()) {
@@ -43,6 +45,8 @@ export function conversationRoutes(db: Db) {
         message,
         sessionKey: typeof sessionKey === "string" ? sessionKey : undefined,
         source: typeof source === "string" ? source : undefined,
+        allowedTools: Array.isArray(allowedTools) ? allowedTools.filter((t): t is string => typeof t === "string") : undefined,
+        maxTurns: typeof maxTurns === "number" && maxTurns > 0 ? Math.min(maxTurns, 20) : undefined,
       });
 
       res.json(result);
